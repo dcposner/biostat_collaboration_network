@@ -1,0 +1,175 @@
+---
+title: "BU Biostats Faculty Collaboration Network"
+author: "Dan Posner"
+date: "October 27, 2016"
+output: html_document
+---
+
+## Package loading
+```{r setup, results='hide', message=F}
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("data.table","statnet", "ndtv",
+              "scatterplot3d","htmlwidgets","tsna")
+ipak(packages)
+```
+
+## Data input
+We'll read in the dataset I made of pubmed articles with at least 2 biostat faculty co-authors.  
+The data matrix is Article X Faculty, with two header columns (article name and year).  
+```{r }
+# Read in dataset
+DT <- fread('data/edge_dat.csv', header=T)
+head(DT)
+# Remove article title
+DT <- DT[,title:=NULL]
+```
+
+## Create Adjacency Matrices for each year
+```{r}
+# Yearly dataset of shared articles
+DTlist <- list()
+# List of weighted adjacency matrices for each year
+Adjlist <- list()
+# List of unweighted adjacency matrices for each year
+unweighted <- list()
+
+for (i in 1:length(unique(DT$year))) {
+  # Subset data.table by year
+  DTlist[[i]] = DT[year==unique(DT$year)[i]]
+  # remove year column
+  DTlist[[i]][,year:=NULL]
+
+  # Create Adjacency matrix 
+  #  i.e. we want entries in this matrix to be
+  #  dot products of two faculty's authorship
+  Adjlist[[i]] = as.matrix(t(DTlist[[i]])) %*% 
+                 as.matrix(DTlist[[i]])
+  
+  # Create unweighted adjacency matrix
+  unweighted[[i]] = Adjlist[[i]]
+  # Set edge weights > 1 to 1
+  unweighted[[i]][unweighted[[i]]>1] = 1
+}
+```
+
+## Creating a dynamic (i.e. temporal) co-authorship network  
+First we create one network per year.
+```{r}
+#   One network per time point (year)
+netlist <- lapply(unweighted, function(x) 
+            as.network(x, directed = F))
+```
+Then we create a dynamic network from the list of static networks
+```{r}
+# Create dynamic network from list of static nets
+minyear = min(DT$year) # starts in 2002
+maxyear = max(DT$year) # ends in 2016
+tnet <- networkDynamic(network.list=netlist,
+            onsets=(minyear-1):(maxyear-1),
+            termini=minyear:maxyear,
+            create.TEAs=T) # add vertex names
+```
+
+## Plots and animations of network changes over time
+```{r, message=F}
+compute.animation(tnet)
+
+# Time prism projection plot (set displayed slices with at=times)
+timePrism(tnet,at=c(2002,2009,2015),
+          displaylabels=TRUE,planes = TRUE,
+          label.cex=0.5, angle=35,
+          displayisolates=F)
+```
+
+# Filmstrip plot
+```{r}
+filmstrip(tnet,displaylabels=FALSE)
+```
+
+# Network changes over time
+```{r}
+render.d3movie(tnet,output.mode = 'htmlWidget', displaylabels=T)
+```
+
+# Timeline
+If we want to focus solely on the relative durations of collaborations, we can view the dynamics as a timeline by plotting the active spells of edges and vertices. This plot hides network structure and connectivity.
+```{r}
+timeline(tnet, displaylabels=T)
+```
+
+# Proximity timeline
+In this view vertices are positioned vertically by their geodesic distance proximity. This means that changes in network structure deflect the vertices' lines into new positions, attempting to keep closely-tied vertices as neighbors. The edges are not shown at all in this view.
+```{r}
+proximity.timeline(tnet,default.dist=6,
+          mode='sammon',labels.at=2009,vertex.cex=4)
+```
+
+# Data format of a dynamic network
+Have any faculty published together for at least 5 consecutive years?
+```{r}
+dat=as.data.frame(tnet)
+head(dat)
+dat[dat$duration>=5,]
+```
+
+## Calculate some basic network statistics
+How many edges form at each time step for the collaboration network? Conveniently, the values are returned as a time series, plot already knows how to handle them.
+```{r}
+tEdgeFormation(tnet)
+plot(tEdgeFormation(tnet))
+```
+
+## Transitivity over time (artificial since didn't use hyperedges)
+```{r}
+plot(tSnaStats(tnet, 'gtrans'))
+```
+
+## Mean degree over time
+```{r}
+plot(tErgmStats(tnet,'meandeg'),
+     main='Mean degree of co-authorship, 1 year interval')
+```
+
+## Co-authorship duration from 2002-2016
+```{r}
+summary( edgeDuration(tnet) )
+hist(edgeDuration(tnet, subject='spells'))
+```
+
+## Co-authorship duration in two 7-year periods: 2003-2009 vs 2010-2016
+```{r}
+summary( edgeDuration(tnet,start=2003,end=2009))
+summary( edgeDuration(tnet,start=2010,end=2016))
+hist(edgeDuration(tnet,start=2003,end=2009, subject='spells'))
+hist(edgeDuration(tnet,start=2010,end=2016, subject='spells'))
+```
+
+## Most active interdepartmental co-authors
+```{r}
+vertexDuration(tnet)
+hist(vertexDuration(tnet))
+```
+
+## Collapsing the dynamic (temporal) network
+```{r}
+aggnet = network.collapse(tnet, rm.time.info=F, rule='latest')
+slice.par<-list(start=2002,end=2016,interval=15, 
+                aggregate.dur=15,rule='latest')
+compute.animation(tnet,animation.mode='MDSJ',
+                  slice.par=slice.par)
+# extract the coords so we can do a static plot
+coords<-cbind(get.vertex.attribute.active(tnet, 
+                                          'animation.x',at=2002),
+              get.vertex.attribute.active(tnet, 
+                                          'animation.y',at=2002))
+plot(aggnet,coord=coords,
+     edge.lwd='activity.duration', edge.col='#00000055',
+     edge.label='activity.duration',edge.label.col='blue',
+     edge.label.cex=0.5,main='Edge weights ignored', displaylabels=T)
+```
